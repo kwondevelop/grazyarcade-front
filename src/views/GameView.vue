@@ -5,7 +5,7 @@ import GameBoard from '../components/GameBoard.vue'
 <template>
   <div class="game-view">
     <header class="game-header">
-      <h1>🚀 크레이지 아케이드 (로컬 테스트)</h1>
+      <h1>크레이지 아케이드 (로컬 테스트)</h1>
       <div class="status">
         <!-- 나중에 여기에 남은 시간, 점수 등을 넣을 수 있습니다. -->
         <span>Player 1</span>
