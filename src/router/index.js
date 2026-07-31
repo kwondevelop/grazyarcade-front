@@ -1,7 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
-// 만들어둔 뷰 파일들을 가져옵니다.
 import LoginView from '../views/LoginView.vue'
 import LobbyView from '../views/LobbyView.vue'
+import WaitingRoomView from '../views/WaitingRoomView.vue'
 import GameView from '../views/GameView.vue'
 
 const router = createRouter({
@@ -10,7 +10,7 @@ const router = createRouter({
         {
             path: '/',
             name: 'login',
-            component: LoginView // 처음 접속하면 로그인 화면
+            component: LoginView // 로그인 화면
         },
         {
             path: '/lobby',
@@ -18,9 +18,14 @@ const router = createRouter({
             component: LobbyView // 로비 화면
         },
         {
+            path: '/waiting',
+            name: 'waiting',
+            component: WaitingRoomView // 대기실 화면
+        },
+        {
             path: '/game',
             name: 'game',
-            component: GameView // 우리가 방금 만든 게임 화면!
+            component: GameView // 게임 화면
         }
     ]
 })

@@ -1,190 +1,265 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
+import { useUserStore } from '../stores/userStore'
+import api from '../services/api'
 
 const router = useRouter()
-const rooms = ref([])
-const newRoomName = ref('')
+const userStore = useUserStore()
+const roomList = ref([])
 
-// 1. 방 목록 불러오기 (GET 요청)
+// 방 목록 불러오기
 const fetchRooms = async () => {
     try {
-        const response = await fetch('http://localhost:8080/api/rooms')
-        if (response.ok) {
-            rooms.value = await response.json()
-        }
+        const res = await api.get('/rooms')
+        roomList.value = res.data
     } catch (error) {
-        console.error('방 목록을 가져오는 중 에러 발생:', error)
+        console.error('방 목록을 불러오지 못했습니다.', error)
     }
 }
 
-// 2. 방 생성하기 (POST 요청)
+// 방 만들기
 const createRoom = async () => {
-    if (newRoomName.value.trim() === '') {
-        alert('방 제목을 입력해 주세요!')
+    if (!userStore.currentUser) {
+        alert('로그인이 필요합니다.')
         return
     }
+    const title = prompt('방 제목을 입력하세요:')
+    if (!title) return
 
     try {
-        const response = await fetch(`http://localhost:8080/api/rooms?name=${newRoomName.value}`, {
-            method: 'POST'
+        const res = await api.post('/rooms', { 
+            title: title, 
+            host: userStore.currentUser.nickname 
         })
-        
-        if (response.ok) {
-            const createdRoom = await response.json()
-            // 방 생성에 성공하면 내가 만든 방으로 바로 입장!
-            enterRoom(createdRoom.roomId)
-        }
+        const newRoomId = res.data.roomId
+        // 방 생성 후 대기실로 이동
+        router.push({ path: '/waiting', query: { roomId: newRoomId } })
     } catch (error) {
-        console.error('방 생성 중 에러 발생:', error)
+        alert('방 생성에 실패했습니다.')
     }
 }
 
-// 3. 방 입장하기 (URL 쿼리 스트링으로 roomId 전달)
-const enterRoom = (room) => {
-    // 입장 불가 조건 체크
-    if (room.playing) {
-        alert('이미 게임이 진행 중인 방입니다!')
+// 방 입장하기
+const joinRoom = (roomId) => {
+    if (!userStore.currentUser) {
+        alert('로그인이 필요합니다.')
         return
     }
-    if (room.currentPlayers >= room.maxPlayers) {
-        alert('방 인원이 가득 찼습니다!')
-        return
-    }
-    router.push({ path: '/game', query: { roomId: room.roomId } })
+    router.push({ path: '/waiting', query: { roomId } })
 }
 
-// 컴포넌트가 화면에 나타날 때 방 목록을 한 번 불러옵니다.
+// 로그아웃
+const handleLogout = async () => {
+    await userStore.logout()
+    router.push('/login')
+}
+
 onMounted(() => {
     fetchRooms()
 })
 </script>
 
 <template>
-<div class="lobby-container">
-    <div class="lobby-header">
-        <h1>크레이지 아케이드 로비</h1>
-        <p>방을 만들거나 입장해서 친구들과 대결하세요!</p>
-    </div>
-
-    <!-- 방 만들기 영역 -->
-    <div class="create-room-box">
-        <input 
-            type="text" 
-            v-model="newRoomName" 
-            placeholder="새로운 방 제목을 입력하세요" 
-            @keyup.enter="createRoom"
-        /> 
-        <button @click="createRoom" class="btn-create">방 만들기</button>
-        <button @click="fetchRooms" class="btn-refresh">새로 고침</button>
-    </div>
-
-    <!-- 방 목록 영역 -->
-    <div class="room-list">
-        <div v-if="rooms.length === 0" class="empty-room">
-            현재 생성된 방이 없습니다. 첫 번째 방을 만들어보세요!
-        </div>
+<div class="lobby-wrapper">
+    <div class="main-content">
         
-        <div v-for="room in rooms" :key="room.roomId" class="room-card">
-            <div class="room-info">
-                <span class="room-name">{{ room.roomName }}</span>
-                <span class="room-players">인원: {{ room.currentPlayers }} / {{ room.maxPlayers }}</span>
+        <!-- [좌측] 내 정보 패널 -->
+        <div class="left-sidebar">
+            <div class="profile-section">
+                <div class="character-preview">
+                    <!-- 유저 정보가 있을 때 렌더링 -->
+                    <div v-if="userStore.currentUser" class="user-info">
+                        <h3>Lv.{{ userStore.currentUser.level }} {{ userStore.currentUser.nickname }}</h3>
+                        <p>승리: {{ userStore.currentUser.winCount }}</p>
+                        <p>패배: {{ userStore.currentUser.loseCount }}</p>
+                        <p>승률: {{ 
+                            userStore.currentUser.winCount + userStore.currentUser.loseCount === 0 
+                            ? 0 
+                            : Math.round((userStore.currentUser.winCount / (userStore.currentUser.winCount + userStore.currentUser.loseCount)) * 100) 
+                        }}%</p>
+                    </div>
+                    <div v-else>
+                        로그인 정보 없음
+                    </div>
+                </div>
             </div>
-            <button @click="enterRoom(room.roomId)" class="btn-enter">입장하기</button>
+            <div class="user-list-section">
+                <div class="user-list-header">서버 접속자</div>
+                <div class="user-list-box">
+                    <div class="user-item" v-if="userStore.currentUser">
+                        Lv.{{ userStore.currentUser.level }} {{ userStore.currentUser.nickname }} (나)
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- [우측] 방 목록 패널 -->
+        <div class="right-main">
+            <div class="top-buttons">
+                <div class="primary-btns">
+                    <button class="btn-create" @click="createRoom">방만들기</button>
+                    <button class="btn-quick" @click="fetchRooms">새로고침</button>
+                </div>
+            </div>
+
+            <!-- 방 목록 그리드 -->
+            <div class="room-grid-section">
+                <div class="room-grid">
+                    <div 
+                        class="room-card" 
+                        v-for="room in roomList" 
+                        :key="room.roomId"
+                        @click="joinRoom(room.roomId)"
+                    >
+                        <div class="room-title">{{ room.title }}</div>
+                        <div class="room-status">
+                            <span>방장: {{ room.host }}</span>
+                            <span>[{{ room.status }}]</span>
+                        </div>
+                    </div>
+                    <div v-if="roomList.length === 0" class="empty-room">
+                        생성된 방이 없습니다.
+                    </div>
+                </div>
+            </div>
+
+            <div class="chat-section">
+                <div class="chat-display">서버 전체 채팅 준비중...</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 하단 메뉴 -->
+    <div class="bottom-global-bar">
+        <div class="menu-left">메뉴 | 상점</div>
+        <div class="menu-right">
+            <span v-if="userStore.currentUser" style="margin-right: 15px;">{{ userStore.currentUser.nickname }}님 접속 중</span>
+            <button class="btn-logout" @click="handleLogout">로그아웃</button>
         </div>
     </div>
 </div>
 </template>
 
 <style scoped>
-.lobby-container {
+.lobby-wrapper {
     display: flex;
     flex-direction: column;
-    align-items: center;
-    width: 100vw;
-    height: 100vh;
-    background-color: #2c3e50;
-    color: white;
-    padding-top: 50px;
-    font-family: 'Noto Sans KR', sans-serif;
-}
-
-.lobby-header {
-    text-align: center;
-    margin-bottom: 30px;
-}
-.lobby-header h1 {
-    color: #f1c40f;
-    margin-bottom: 10px;
-}
-
-.create-room-box {
-    display: flex;
-    gap: 10px;
-    margin-bottom: 30px;
-    background-color: rgba(0, 0, 0, 0.3);
-    padding: 20px;
-    border-radius: 8px;
-}
-.create-room-box input {
-    width: 250px;
+    width: 800px; 
+    height: 600px;
+    background-color: #00bfff; 
     padding: 10px;
-    border: none;
-    border-radius: 4px;
-    outline: none;
-    font-size: 1rem;
+    box-sizing: border-box;
+    font-family: sans-serif;
+    margin: 0 auto;
 }
-button {
-    padding: 10px 15px;
-    border: none;
-    border-radius: 4px;
-    font-weight: bold;
-    cursor: pointer;
-    transition: background-color 0.2s;
-}
-.btn-create { background-color: #27ae60; color: white; }
-.btn-create:hover { background-color: #2ecc71; }
-.btn-refresh { background-color: #34495e; color: white; }
-.btn-refresh:hover { background-color: #2c3e50; }
 
-.room-list {
+.main-content {
+    display: flex;
+    flex: 1;
+    gap: 10px;
+    margin-bottom: 10px;
+    overflow: hidden;
+}
+
+.left-sidebar {
+    width: 200px;
     display: flex;
     flex-direction: column;
-    gap: 15px;
-    width: 500px;
-    max-height: 500px;
-    overflow-y: auto;
+    gap: 10px;
 }
-.empty-room {
+
+.profile-section { 
+    height: 150px; 
+    background: rgba(255,255,255,0.9); 
+    border: 2px solid #0056b3; 
+    padding: 10px;
+    border-radius: 8px;
+}
+
+.user-info h3 { margin: 0 0 10px 0; color: #333; }
+.user-info p { margin: 5px 0; font-size: 0.9rem; font-weight: bold; color: #555; }
+
+.user-list-section { 
+    flex: 1; 
+    background: #007bff; 
+    border: 2px solid #0056b3; 
+    display: flex; 
+    flex-direction: column; 
+    border-radius: 8px;
+}
+
+.user-list-header {
+    background: #0056b3;
+    color: white;
+    padding: 5px;
     text-align: center;
-    color: #bdc3c7;
-    padding: 30px;
-    background-color: rgba(0, 0, 0, 0.2);
-    border-radius: 8px;
-}
-.room-card {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    background-color: #ecf0f1;
-    color: #2c3e50;
-    padding: 15px 20px;
-    border-radius: 8px;
-    box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-}
-.room-info {
-    display: flex;
-    flex-direction: column;
-    gap: 5px;
-}
-.room-name {
-    font-size: 1.2rem;
     font-weight: bold;
 }
-.room-players {
-    font-size: 0.9rem;
-    color: #7f8c8d;
+
+.user-list-box { flex: 1; padding: 5px; overflow-y: auto; }
+.user-item { background: rgba(0,0,0,0.2); color: white; margin-bottom: 5px; padding: 8px; font-size: 13px; font-weight: bold; }
+
+.right-main {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
 }
-.btn-enter { background-color: #3498db; color: white; }
-.btn-enter:hover { background-color: #2980b9; }
+
+.top-buttons { 
+    display: flex; justify-content: space-between; align-items: center; 
+    height: 60px; background: rgba(0,0,0,0.2); padding: 0 10px; border-radius: 8px;
+}
+
+.primary-btns button { 
+    padding: 10px 20px; font-size: 16px; font-weight: bold; margin-right: 10px;
+    cursor: pointer; border: none; border-radius: 5px; color: white;
+}
+.btn-create { background-color: #f1c40f; color: #333 !important; border: 2px solid #f39c12 !important; }
+.btn-quick { background-color: #2ecc71; border: 2px solid #27ae60 !important; }
+
+.room-grid-section { 
+    flex: 2; background: #007bff; border: 2px solid #0056b3; 
+    display: flex; flex-direction: column; padding: 10px; border-radius: 8px;
+}
+
+.room-grid { 
+    display: grid; grid-template-columns: 1fr 1fr; gap: 10px; flex: 1; align-content: start;
+}
+
+.room-card { 
+    background: #4dabf7; border: 2px solid #1864ab; border-radius: 8px;
+    display: flex; flex-direction: column; justify-content: space-between; padding: 10px;
+    height: 70px; cursor: pointer; transition: 0.1s;
+}
+
+.room-card:hover { transform: scale(1.02); background: #339af0; }
+.room-title { font-weight: bold; font-size: 1.1rem; color: white; }
+.room-status { display: flex; justify-content: space-between; font-size: 0.85rem; color: #e9ecef; margin-top: auto; }
+
+.empty-room { color: white; font-weight: bold; grid-column: span 2; text-align: center; margin-top: 20px; }
+
+.chat-section { 
+    height: 120px; background: #339af0; border: 2px solid #0056b3; 
+    display: flex; flex-direction: column; border-radius: 8px;
+}
+.chat-display { flex: 1; padding: 10px; color: white; font-weight: bold; }
+
+.bottom-global-bar { 
+    height: 40px; background: #003366; color: white; 
+    display: flex; justify-content: space-between; align-items: center; 
+    padding: 0 15px; font-size: 13px; font-weight: bold; border-radius: 4px;
+}
+
+.btn-logout {
+    background-color: #e74c3c;
+    color: white;
+    border: none;
+    padding: 5px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-weight: bold;
+}
+.btn-logout:hover { background-color: #c0392b; }
 </style>

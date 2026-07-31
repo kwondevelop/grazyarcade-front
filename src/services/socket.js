@@ -4,8 +4,8 @@ import SockJS from 'sockjs-client/dist/sockjs'
 class SocketService {
     constructor() { this.stompClient = null }
 
-    // 파라미터에 onStartReceived 추가
-    connect(roomId, onMoveReceived, onBombReceived, onChatReceived, onStartReceived, onConnected) {
+    // 파라미터에 onLobbyReceived 추가
+    connect(roomId, onMoveReceived, onBombReceived, onChatReceived, onStartReceived, onStateReceived, onLobbyReceived, onConnected) {
         const socketUrl = 'http://localhost:8080/ws-stomp'
         const socket = new SockJS(socketUrl)
 
@@ -16,10 +16,12 @@ class SocketService {
                 this.stompClient.subscribe(`/topic/room/${roomId}/move`, (m) => onMoveReceived(JSON.parse(m.body)))
                 this.stompClient.subscribe(`/topic/room/${roomId}/bomb`, (m) => onBombReceived(JSON.parse(m.body)))
                 if (onChatReceived) this.stompClient.subscribe(`/topic/room/${roomId}/chat`, (m) => onChatReceived(JSON.parse(m.body)))
+                if (onStartReceived) this.stompClient.subscribe(`/topic/room/${roomId}/start`, () => onStartReceived())
+                if (onStateReceived) this.stompClient.subscribe(`/topic/room/${roomId}/state`, (m) => onStateReceived(JSON.parse(m.body)))
                 
-                // 게임 시작 신호 구독
-                if (onStartReceived) {
-                    this.stompClient.subscribe(`/topic/room/${roomId}/start`, () => onStartReceived())
+                // 방장/레디 상태 채널 구독
+                if (onLobbyReceived) {
+                    this.stompClient.subscribe(`/topic/room/${roomId}/lobby`, (m) => onLobbyReceived(JSON.parse(m.body)))
                 }
 
                 if (onConnected) onConnected()
@@ -33,11 +35,16 @@ class SocketService {
     sendChat(roomId, senderId, content) { if (this.stompClient?.connected) this.stompClient.publish({ destination: `/app/room/${roomId}/chat`, body: JSON.stringify({ roomId, senderId, content }) }) }
     sendEnter(roomId, senderId) { if (this.stompClient?.connected) this.stompClient.publish({ destination: `/app/room/${roomId}/enter`, body: JSON.stringify({ roomId, senderId, content: '' }) }) }
     sendLeave(roomId, senderId) { if (this.stompClient?.connected) this.stompClient.publish({ destination: `/app/room/${roomId}/leave`, body: JSON.stringify({ roomId, senderId, content: '' }) }) }
+    sendGameStart(roomId) { if (this.stompClient?.connected) this.stompClient.publish({ destination: `/app/room/${roomId}/start`, body: 'start' }) }
+    sendPlayerState(roomId, playerId, isTrapped, isDead) { if (this.stompClient?.connected) this.stompClient.publish({ destination: `/app/room/${roomId}/state`, body: JSON.stringify({ roomId, playerId, isTrapped, isDead }) }) }
 
-    // 게임 시작 서버로 전송
-    sendGameStart(roomId) {
+    // 로비(방장/레디) 이벤트 전송 함수
+    sendLobbyEvent(roomId, type, senderId, payloadObj) {
         if (this.stompClient?.connected) {
-            this.stompClient.publish({ destination: `/app/room/${roomId}/start`, body: 'start' })
+            this.stompClient.publish({
+                destination: `/app/room/${roomId}/lobby`,
+                body: JSON.stringify({ roomId, type, senderId, payload: JSON.stringify(payloadObj) })
+            })
         }
     }
 
