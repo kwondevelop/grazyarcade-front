@@ -6,7 +6,9 @@ class SocketService {
 
     // 파라미터에 onLobbyReceived 추가
     connect(roomId, onMoveReceived, onBombReceived, onChatReceived, onStartReceived, onStateReceived, onLobbyReceived, onConnected) {
-        const socketUrl = 'http://localhost:8080/ws-stomp'
+        
+        const socketUrl = `http://${window.location.hostname}:8085/ws-stomp`
+        
         const socket = new SockJS(socketUrl)
 
         this.stompClient = new Client({
@@ -14,7 +16,19 @@ class SocketService {
             reconnectDelay: 5000,
             onConnect: () => {
                 this.stompClient.subscribe(`/topic/room/${roomId}/move`, (m) => onMoveReceived(JSON.parse(m.body)))
-                this.stompClient.subscribe(`/topic/room/${roomId}/bomb`, (m) => onBombReceived(JSON.parse(m.body)))
+                
+                // ⭐️ 수정된 부분: 폭발 범위(power)가 백엔드에서 누락되거나 이름이 다를 경우를 대비해 맵핑 및 기본값(1) 처리
+                this.stompClient.subscribe(`/topic/room/${roomId}/bomb`, (m) => {
+                    const data = JSON.parse(m.body)
+                    onBombReceived({
+                        roomId: data.roomId,
+                        playerId: data.playerId,
+                        x: data.x,
+                        y: data.y,
+                        power: data.power || data.powerLevel || 1 // 백엔드 DTO에 맞춰 유연하게 처리
+                    })
+                })
+                
                 if (onChatReceived) this.stompClient.subscribe(`/topic/room/${roomId}/chat`, (m) => onChatReceived(JSON.parse(m.body)))
                 if (onStartReceived) this.stompClient.subscribe(`/topic/room/${roomId}/start`, () => onStartReceived())
                 if (onStateReceived) this.stompClient.subscribe(`/topic/room/${roomId}/state`, (m) => onStateReceived(JSON.parse(m.body)))
