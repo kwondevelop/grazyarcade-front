@@ -12,13 +12,39 @@ const userStore = useUserStore()
 const roomId = route.query.roomId || 'default_room'
 const myId = ref(userStore.currentUser?.nickname || 'Guest_' + Math.floor(Math.random() * 1000))
 
+const availableColors = ['red', 'blue', 'yellow', 'green']
+
+// 남은 색상 자동 할당 로직
+const getAvailableColor = (currentPlayers) => {
+    const usedColors = Object.values(currentPlayers).map(p => p.color)
+    return availableColors.find(c => !usedColors.includes(c)) || 'red'
+}
+
 const players = ref({
-    [myId.value]: { isReady: false }
+    [myId.value]: { 
+        isReady: false,
+        color: 'red' // 방장 기본 색상
+    }
 })
 
-// 낙관적 방장 설정
+// 낙관적 방장 설정 및 타이머
 const hostId = ref(myId.value)
 const isHost = computed(() => hostId.value === myId.value)
+let hostCheckTimer = null;
+
+// 사용 중인 색상 목록 계산
+const takenColors = computed(() => {
+    return Object.values(players.value).map(p => p.color)
+})
+
+// 💡 수정됨: 색상 선택 로직 (레디 상태에서는 변경 불가)
+const selectColor = (color) => {
+    if (players.value[myId.value].isReady) return; // 레디 상태면 막기
+    if (takenColors.value.includes(color) && players.value[myId.value].color !== color) return
+    
+    players.value[myId.value].color = color
+    socketService.sendLobbyEvent(roomId, 'CHANGE_COLOR', myId.value, { color })
+}
 
 // 모든 유저 레디 확인
 const isAllReady = computed(() => {
@@ -27,11 +53,11 @@ const isAllReady = computed(() => {
     return playerIds.every(id => id === hostId.value || players.value[id].isReady)
 })
 
-// UI용 8개 슬롯 데이터
+// UI용 4개 슬롯 데이터
 const displaySlots = computed(() => {
     const slots = []
     const playerIds = Object.keys(players.value)
-    for (let i = 0; i < 8; i++) {
+    for (let i = 0; i < 4; i++) {
         if (i < playerIds.length) {
             const id = playerIds[i]
             slots.push({ id, ...players.value[id], isHost: id === hostId.value })
@@ -49,14 +75,20 @@ const chatBoxRef = ref(null)
 // 통신: 로비 이벤트 처리
 const handleRemoteLobby = (data) => {
     if (data.type === 'JOIN' && data.senderId !== myId.value) {
+        if (Object.keys(players.value).length >= 4) return 
+        
         if (!players.value[data.senderId]) {
-            players.value[data.senderId] = { isReady: false }
+            players.value[data.senderId] = { 
+                isReady: false,
+                color: getAvailableColor(players.value)
+            }
         }
         if (isHost.value) {
             socketService.sendLobbyEvent(roomId, 'STATE_SYNC', myId.value, { hostId: hostId.value, players: players.value })
         }
     }
     else if (data.type === 'STATE_SYNC' && data.senderId !== myId.value) {
+        if (hostCheckTimer) clearTimeout(hostCheckTimer); // 💡 수정됨: 방장 정보 수신 시 내 방장 타이머 취소
         const payload = JSON.parse(data.payload)
         if (payload.hostId) {
             hostId.value = payload.hostId
@@ -66,17 +98,27 @@ const handleRemoteLobby = (data) => {
                 players.value[id] = { ...payload.players[id] }
             }
             players.value[id].isReady = payload.players[id].isReady
+            players.value[id].color = payload.players[id].color || 'red'
         })
     }
     else if (data.type === 'HOST_CLAIM') {
         const payload = JSON.parse(data.payload)
-        if (payload.hostId) hostId.value = payload.hostId
+        if (payload.hostId) {
+            if (hostCheckTimer) clearTimeout(hostCheckTimer); // 💡 수정됨: 타인의 방장 획득 시 타이머 취소
+            hostId.value = payload.hostId
+        }
     }
     else if (data.type === 'READY') {
         if (players.value[data.senderId]) players.value[data.senderId].isReady = true
     }
     else if (data.type === 'UNREADY') {
         if (players.value[data.senderId]) players.value[data.senderId].isReady = false
+    }
+    else if (data.type === 'CHANGE_COLOR') {
+        const payload = JSON.parse(data.payload)
+        if (players.value[data.senderId]) {
+            players.value[data.senderId].color = payload.color
+        }
     }
     else if (data.type === 'LEAVE') {
         delete players.value[data.senderId]
@@ -135,7 +177,13 @@ onMounted(() => {
     socketService.connect(roomId, () => {}, () => {}, handleRemoteChat, () => {}, () => {}, handleRemoteLobby, () => {
         socketService.sendEnter(roomId, myId.value)
         socketService.sendLobbyEvent(roomId, 'JOIN', myId.value, {})
-        socketService.sendLobbyEvent(roomId, 'HOST_CLAIM', myId.value, { hostId: myId.value })
+        
+        // 💡 수정됨: 바로 방장을 뺏지 않고 1초 대기 (기존 방장이 있으면 STATE_SYNC를 받아 타이머가 취소됨)
+        hostCheckTimer = setTimeout(() => {
+            if (hostId.value === myId.value) {
+                socketService.sendLobbyEvent(roomId, 'HOST_CLAIM', myId.value, { hostId: myId.value })
+            }
+        }, 1000)
     })
 })
 
@@ -148,8 +196,6 @@ onUnmounted(() => {
 
 <template>
 <div class="waiting-wrapper">
-    
-    <!-- [상단] 대기실 헤더 -->
     <div class="room-header">
         <div class="header-title">
             <span class="room-number">NO. {{ roomId }}</span>
@@ -159,9 +205,7 @@ onUnmounted(() => {
     </div>
 
     <div class="main-content">
-        <!-- [좌측] 플레이어 슬롯, 채팅 -->
         <div class="left-main">
-            <!-- 플레이어 슬롯 (4열 2행 그리드) -->
             <div class="player-slots-grid">
                 <div 
                     v-for="(slot, index) in displaySlots" 
@@ -171,11 +215,9 @@ onUnmounted(() => {
                 >
                     <template v-if="slot">
                         <div class="character-space">
-                            <!-- 방장 왕관 -->
                             <div v-if="slot.isHost" class="crown-icon">👑</div>
-                            <!-- 레디 표시 효과 -->
                             <div v-if="slot.isReady" class="ready-effect">READY!</div>
-                            <div class="char-sprite"></div>
+                            <div class="char-sprite" :class="slot.color"></div>
                         </div>
                         <div class="player-info">{{ slot.id }}</div>
                         <div class="ready-status" :class="{ 'status-host': slot.isHost, 'status-ready': slot.isReady }">
@@ -191,7 +233,6 @@ onUnmounted(() => {
                 </div>
             </div>
 
-            <!-- 대기방 채팅창 -->
             <div class="chat-section">
                 <div class="chat-header">대기실 채팅</div>
                 <div class="chat-display" ref="chatBoxRef">
@@ -201,28 +242,36 @@ onUnmounted(() => {
                     </div>
                 </div>
                 <div class="chat-input-row">
-                    <select class="chat-target"><option>&lt;모두에게&gt;</option></select>
+                    <select class="chat-target">
+                        <option>&lt;모두에게&gt;</option>
+                    </select>
                     <input type="text" class="chat-input" v-model="chatInput" @keyup.enter="sendChat" placeholder="채팅을 입력하세요..." />
                 </div>
             </div>
         </div>
 
-        <!-- [우측] 설정 및 시작 영역 -->
         <div class="right-sidebar">
-            
-            <!-- 캐릭터 선택 (3x3) -->
             <div class="setting-box character-select">
                 <div class="box-title">캐릭터 선택</div>
-                <div class="char-grid">
-                    <div class="char-item" v-for="i in 9" :key="i">
-                        <div class="char-mini"></div>
+                <div class="color-select-grid">
+                    <div 
+                        v-for="color in availableColors" 
+                        :key="color"
+                        class="color-btn"
+                        :class="[
+                            color, 
+                            { 
+                                'is-taken': takenColors.includes(color) && players[myId]?.color !== color,
+                                'is-selected': players[myId]?.color === color 
+                            }
+                        ]"
+                        @click="selectColor(color)"
+                    >
+                        <span v-if="players[myId]?.color === color">✔</span>
                     </div>
                 </div>
             </div>
 
-            <!-- 팀 선택 섹션 삭제됨 -->
-
-            <!-- 맵 정보 -->
             <div class="setting-box map-select">
                 <div class="box-title">맵 정보</div>
                 <div class="map-info-layout">
@@ -231,13 +280,12 @@ onUnmounted(() => {
                     </div>
                     <div class="map-details">
                         <div class="map-name">패트릿 14</div>
-                        <div class="map-desc">최대 인원: 8명</div>
+                        <div class="map-desc">최대 인원: 4명</div>
                         <button class="btn-map-change">맵 변경</button>
                     </div>
                 </div>
             </div>
 
-            <!-- 시작/레디 버튼 -->
             <div class="start-action-box">
                 <button 
                     v-if="isHost" 
@@ -256,7 +304,6 @@ onUnmounted(() => {
                     {{ players[myId]?.isReady ? '준비 취소' : '준 비' }}
                 </button>
             </div>
-            
         </div>
     </div>
 </div>
@@ -268,7 +315,7 @@ onUnmounted(() => {
     flex-direction: column;
     width: 800px;
     height: 600px;
-    background-color: #1e90ff; /* 메인 블루 */
+    background-color: #1e90ff;
     border: 6px solid #003366;
     border-radius: 12px;
     padding: 10px;
@@ -279,12 +326,11 @@ onUnmounted(() => {
     user-select: none;
 }
 
-/* 상단 방 정보 헤더 */
 .room-header { 
     display: flex; 
     justify-content: space-between; 
     align-items: center; 
-    background: #0b385e; 
+    background-color: #0b385e; 
     padding: 8px 15px; 
     color: white;
     border-radius: 8px;
@@ -310,7 +356,7 @@ onUnmounted(() => {
 }
 
 .btn-leave { 
-    background: #e74c3c; 
+    background-color: #e74c3c; 
     color: white; 
     border: 3px solid #c0392b; 
     padding: 5px 15px; 
@@ -324,7 +370,6 @@ onUnmounted(() => {
     transform: scale(0.95); 
 }
 
-/* 메인 레이아웃 */
 .main-content {
     display: flex;
     flex: 1;
@@ -332,7 +377,6 @@ onUnmounted(() => {
     overflow: hidden;
 }
 
-/* 좌측 메인 (슬롯 + 채팅) */
 .left-main {
     flex: 2;
     display: flex;
@@ -340,17 +384,16 @@ onUnmounted(() => {
     gap: 12px;
 }
 
-/* 플레이어 슬롯 그리드 */
 .player-slots-grid {
     flex: 1;
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    grid-template-rows: 1fr 1fr;
+    grid-template-columns: repeat(2, 1fr);
+    grid-template-rows: repeat(2, 1fr);
     gap: 8px;
 }
 
 .slot {
-    background: #dfe6e9;
+    background-color: #dfe6e9;
     border: 4px solid #34495e;
     border-radius: 8px;
     display: flex;
@@ -366,7 +409,7 @@ onUnmounted(() => {
 }
 
 .slot.is-empty { 
-    background: rgba(0,0,0,0.2); 
+    background-color: rgba(0,0,0,0.2); 
     border: 4px dashed #0056b3; 
     box-shadow: none; 
 }
@@ -377,11 +420,12 @@ onUnmounted(() => {
     justify-content: center; 
     align-items: center; 
     position: relative;
-    background: radial-gradient(circle, #fff 0%, #bdc3c7 100%);
+    background-image: radial-gradient(circle, #fff 0%, #bdc3c7 100%);
 }
 
 .empty-space { 
-    background: transparent; 
+    background-color: transparent; 
+    background-image: none;
 }
 
 .empty-cross { 
@@ -395,7 +439,8 @@ onUnmounted(() => {
     top: 5px; 
     left: 5px; 
     font-size: 1.2rem; 
-    filter: drop-shadow(1px 1px 0 #000); z-index: 2; 
+    filter: drop-shadow(1px 1px 0 #000); 
+    z-index: 2; 
 }
 
 .ready-effect { 
@@ -406,21 +451,37 @@ onUnmounted(() => {
     color: #e74c3c; 
     font-weight: 900; 
     font-size: 1.5rem; 
-    text-shadow: 2px 2px 0 #fff; z-index: 3; 
+    text-shadow: 2px 2px 0 #fff; 
+    z-index: 3; 
     pointer-events: none; 
 }
 
 .char-sprite { 
-    width: 50px; 
-    height: 50px; 
-    background-color: #ff4757; 
+    width: 60px; 
+    height: 60px; 
     border-radius: 50%; 
     border: 4px solid #333; 
     z-index: 1; 
 }
 
+.char-sprite.red {
+    background-image: radial-gradient(circle at 30% 30%, #ff7675, #d63031);
+}
+
+.char-sprite.blue {
+    background-image: radial-gradient(circle at 30% 30%, #74b9ff, #0984e3);
+}
+
+.char-sprite.yellow {
+    background-image: radial-gradient(circle at 30% 30%, #ffeaa7, #fdcb6e);
+}
+
+.char-sprite.green {
+    background-image: radial-gradient(circle at 30% 30%, #55efc4, #00b894);
+}
+
 .player-info { 
-    background: #2c3e50; 
+    background-color: #2c3e50; 
     color: white; 
     text-align: center; 
     font-size: 0.8rem; 
@@ -432,12 +493,12 @@ onUnmounted(() => {
 }
 
 .empty-info { 
-    background: transparent; 
+    background-color: transparent; 
     color: rgba(255,255,255,0.5); 
 }
 
 .ready-status { 
-    background: #34495e; 
+    background-color: #34495e; 
     color: white; 
     text-align: center; 
     padding: 6px; 
@@ -446,27 +507,26 @@ onUnmounted(() => {
 }
 
 .status-host { 
-    background: #f1c40f; 
+    background-color: #f1c40f; 
     color: #333; 
 }
 
 .status-ready { 
-    background: #2ecc71; 
+    background-color: #2ecc71; 
     color: white; 
 }
 
-/* 채팅창 */
 .chat-section { 
     height: 130px; 
     display: flex; 
     flex-direction: column; 
-    background: #34495e; 
+    background-color: #34495e; 
     border: 4px solid #001f3f; 
     border-radius: 8px;
 }
 
 .chat-header { 
-    background: #001f3f; 
+    background-color: #001f3f; 
     color: #f1c40f; 
     font-size: 0.8rem; 
     font-weight: 900; 
@@ -497,12 +557,12 @@ onUnmounted(() => {
 .chat-input-row { 
     display: flex; 
     padding: 6px; 
-    background: #001f3f; 
+    background-color: #001f3f; 
     gap: 5px; 
 }
 
 .chat-target { 
-    background: #34495e; 
+    background-color: #34495e; 
     color: white; 
     border: 1px solid #7f8c8d; 
     border-radius: 4px; 
@@ -519,7 +579,6 @@ onUnmounted(() => {
     font-weight: bold; 
 }
 
-/* 우측 사이드바 (설정) */
 .right-sidebar {
     flex: 1;
     display: flex;
@@ -528,7 +587,7 @@ onUnmounted(() => {
 }
 
 .setting-box { 
-    background: #007bff; 
+    background-color: #007bff; 
     border: 4px solid #001f3f; 
     border-radius: 8px;
     padding: 10px; 
@@ -544,44 +603,65 @@ onUnmounted(() => {
     text-shadow: 1px 1px 0 #000; 
 }
 
-/* 캐릭터 선택 3x3 */
-.character-select { /* 팀 색상이 빠져서 높이 비율을 조금 더 주었습니다 */
+.character-select { 
     flex: 1.3; 
 }
 
-.char-grid { 
-    display: grid; 
-    grid-template-columns: repeat(3, 1fr); 
-    gap: 5px; 
-    flex: 1; 
+.color-select-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    grid-template-rows: repeat(2, 1fr);
+    gap: 10px;
+    flex: 1;
+    justify-items: center;
+    align-items: center;
 }
 
-.char-item { 
-    background: #34495e; 
-    border: 2px solid #2c3e50; 
-    border-radius: 4px; 
-    display: flex; 
-    justify-content: center; 
-    align-items: center; 
-    cursor: pointer; 
+.color-btn {
+    width: 50px;
+    height: 50px;
+    border-radius: 50%;
+    border: 4px solid #2c3e50;
+    cursor: pointer;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    font-size: 1.5rem;
+    color: white;
+    font-weight: 900;
+    text-shadow: 1px 1px 2px rgba(0,0,0,0.5);
+    transition: 0.2s;
 }
 
-.char-mini { 
-    width: 20px; 
-    height: 20px; 
-    background: #bdc3c7; 
-    border-radius: 50%; 
+.color-btn.red {
+    background-image: radial-gradient(circle at 30% 30%, #ff7675, #d63031);
 }
 
-.char-item:hover { 
-    border-color: #f1c40f; 
-    background: #2c3e50; 
+.color-btn.blue {
+    background-image: radial-gradient(circle at 30% 30%, #74b9ff, #0984e3);
 }
 
-/* 팀 선택 부분 삭제됨 */
+.color-btn.yellow {
+    background-image: radial-gradient(circle at 30% 30%, #ffeaa7, #fdcb6e);
+}
 
-/* 맵 선택 */
-.map-select { /* 팀 색상이 빠진 공간을 맵 정보가 조금 차지하도록 높이를 키움 */
+.color-btn.green {
+    background-image: radial-gradient(circle at 30% 30%, #55efc4, #00b894);
+}
+
+.color-btn.is-taken {
+    opacity: 0.3;
+    cursor: not-allowed;
+    filter: grayscale(1);
+}
+
+.color-btn.is-selected {
+    border-color: #fff;
+    box-shadow: 0 0 15px rgba(255,255,255,0.8);
+    transform: scale(1.1);
+}
+
+.map-select { 
     height: 110px; 
 }
 
@@ -593,7 +673,7 @@ onUnmounted(() => {
 
 .map-preview { 
     flex: 1; 
-    background: #27ae60; 
+    background-color: #27ae60; 
     border: 3px solid #2c3e50; 
     border-radius: 4px; 
     display: flex; 
@@ -623,7 +703,7 @@ onUnmounted(() => {
 }
 
 .btn-map-change { 
-    background: #f1c40f; 
+    background-color: #f1c40f; 
     color: #333; 
     border: 2px solid #cc8800; 
     border-radius: 4px; 
@@ -632,7 +712,6 @@ onUnmounted(() => {
     padding: 4px; 
 }
 
-/* 시작 액션 버튼 */
 .start-action-box { 
     height: 70px; 
     display: flex; 

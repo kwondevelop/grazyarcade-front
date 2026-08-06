@@ -38,7 +38,7 @@ const userStore = useUserStore()
 
 const myId = ref(userStore.currentUser?.nickname || 'Guest_' + Math.floor(Math.random() * 1000)) 
 
-// 💡 남은 색상을 겹치지 않게 할당하는 로직
+// 남은 색상을 겹치지 않게 할당하는 로직
 const getAvailableColor = (currentPlayers) => {
     const usedColors = Object.values(currentPlayers).map(p => p.color)
     const allColors = ['red', 'blue', 'yellow', 'green']
@@ -150,7 +150,6 @@ const handleRemoteState = (data) => {
 
 const handleRemoteLobby = (data) => {
     if (data.type === 'JOIN' && data.senderId !== myId.value) {
-        // 💡 최대 4명 인원 제한
         if (Object.keys(players.value).length >= 4) return;
         
         if (!players.value[data.senderId]) {
@@ -300,6 +299,7 @@ const handleKeydown = (e) => {
         
         checkItemPickup(nextX, nextY)
         
+        // 💡 플레이어가 불길로 뛰어들었을 때 피격 판정
         if (explosions.value.some(e => e.x === nextX && e.y === nextY)) {
             me.isTrapped = true
             socketService.sendPlayerState(roomId, myId.value, true, false)
@@ -332,7 +332,7 @@ const checkItemPickup = (x, y) => {
     if (itemIndex > -1) {
         const item = items.value[itemIndex]
         
-        // 💡 5. 최대 스탯 제한 (최대 5)
+        // 최대 스탯 제한 (최대 5)
         if (item.type === 'potion') me.power = Math.min(me.power + 1, 5) 
         else if (item.type === 'balloon') me.maxBombs = Math.min(me.maxBombs + 1, 5) 
         else if (item.type === 'needle') me.needles = Math.min(me.needles + 1, 5) 
@@ -363,6 +363,9 @@ const explodeBomb = (bomb) => {
     
     const directions = [[0, -1], [0, 1], [-1, 0], [1, 0]]
     const blastTiles = [{ x: bomb.x, y: bomb.y }] 
+    
+    // ✨ 방금 태어난 아이템을 추적할 배열
+    const newlySpawnedItems = []
 
     directions.forEach(dir => {
         for (let i = 1; i <= bomb.power; i++) {
@@ -384,7 +387,7 @@ const explodeBomb = (bomb) => {
             if (cellType === 2) {
                 mapData.value[by][bx] = 0
                 
-                // 💡 3. 아이템 스폰 확률을 30%로 하향
+                // 아이템 스폰 확률 30%
                 const rand = (bx * 29 + by * 13) % 100
                 if (rand < 30) { 
                     let itemType = 'potion'
@@ -392,7 +395,9 @@ const explodeBomb = (bomb) => {
                     else if (rand < 20) itemType = 'needle' 
                     
                     if (!items.value.some(i => i.x === bx && i.y === by)) {
-                        items.value.push({ x: bx, y: by, type: itemType })
+                        const newItem = { x: bx, y: by, type: itemType }
+                        items.value.push(newItem)
+                        newlySpawnedItems.push(newItem) // ✨ 방금 태어난 아이템 기록
                     }
                 }
                 break 
@@ -404,10 +409,16 @@ const explodeBomb = (bomb) => {
     const tilesWithId = blastTiles.map(t => ({ ...t, blastId }));
     explosions.value.push(...tilesWithId);
 
-    // 💡 4. 물줄기(폭발 범위)에 닿은 아이템은 모두 소멸 처리
     blastTiles.forEach(tile => {
-        items.value = items.value.filter(i => !(i.x === tile.x && i.y === tile.y))
+        // ✨ 수정됨: 방금 태어난 아이템은 폭발 범위에 있어도 보호 (삭제하지 않음)
+        items.value = items.value.filter(i => {
+            if (i.x === tile.x && i.y === tile.y) {
+                return newlySpawnedItems.includes(i) 
+            }
+            return true
+        })
         
+        // 물줄기에 닿은 플레이어 피격 처리
         Object.entries(players.value).forEach(([id, p]) => {
             if (p.x === tile.x && p.y === tile.y && !p.isDead) {
                 if (id === myId.value) {
